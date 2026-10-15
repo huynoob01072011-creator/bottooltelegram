@@ -1,2 +1,8 @@
-pyTelegramBotAPI>=4.14.0
-Flask>=3.0.0
+# ==================== TELEGRAM BOT ====================
+pyTelegramBotAPI==4.14.0
+
+# ==================== WEB DASHBOARD ====================
+Flask==3.0.0
+
+# ==================== HTTP CLIENT (GỌI API GAME HUB) ====================
+requests==2.31.0
