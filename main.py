@@ -1,11 +1,11 @@
 import telebot
 from telebot import types
 from urllib.parse import quote
-from collections import defaultdict
 from datetime import datetime
 import pytz
 import json
 import os
+import time
 import threading
 from flask import Flask, render_template, send_file
 
@@ -14,7 +14,7 @@ from flask import Flask, render_template, send_file
 # ==============================
 
 BOT_TOKEN = "8638972575:AAGMXJqG2U3Ukg9aH6T0ngcNoDGR-tibZYI"
-bot = telebot.TeleBot(BOT_TOKEN)
+bot = telebot.TeleBot(BOT_TOKEN, threaded=False)
 
 # ==============================
 # CẤU HÌNH ADMIN & GROUP
@@ -27,7 +27,7 @@ BOT_LINK       = "https://t.me/CNDDTX_BOT"
 GROUP_LINK     = "https://t.me/HTDDTX"
 
 # ==============================
-# CẤU HÌNH NGÂN HÀNG (VIETQR)
+# CẤU HÌNH NGÂN HÀNG
 # ==============================
 
 BANK_BIN     = "970422"
@@ -36,55 +36,117 @@ ACCOUNT_NO   = "101072011"
 ACCOUNT_NAME = "NGUYEN VAN GIA HUY"
 
 # ==============================
-# FILE LƯU TRỮ JSON
+# DANH SÁCH GÓI VIP
+# ==============================
+
+VIP_PACKAGES = {
+    "1day":    {"name": "Key 1 Ngày",      "price": 25000,  "days": 1,    "emoji": "🥉"},
+    "3day":    {"name": "Key 3 Ngày",      "price": 50000,  "days": 3,    "emoji": "🥈"},
+    "1week":   {"name": "Key 1 Tuần",      "price": 70000,  "days": 7,    "emoji": "🥇"},
+    "1month":  {"name": "Key 1 Tháng",     "price": 150000, "days": 30,   "emoji": "🏆"},
+    "1year":   {"name": "Key 1 Năm",       "price": 200000, "days": 365,  "emoji": "👑"},
+    "forever": {"name": "Key Vĩnh Viễn",   "price": 350000, "days": -1,   "emoji": "💎"},
+}
+
+# ==============================
+# DANH SÁCH GAME
+# ==============================
+
+GAMES = {
+    "sunwin":   {"name": "Sunwin",    "emoji": "☀️", "link": "https://sunwin.com"},
+    "b52":      {"name": "B52 Club",  "emoji": "🎯", "link": "https://b52.club"},
+    "go88":     {"name": "Go88",      "emoji": "🎰", "link": "https://go88.com"},
+    "rikvip":   {"name": "Rikvip",    "emoji": "🎲", "link": "https://rikvip.com"},
+    "manclub":  {"name": "Manclub",   "emoji": "🃏", "link": "https://manclub.com"},
+    "789club":  {"name": "789 Club",  "emoji": "🎴", "link": "https://789club.com"},
+}
+
+# ==============================
+# FILE JSON
 # ==============================
 
 DATA_FILE = "users.json"
 
-# ==============================
-# HÀM ĐỌC / GHI JSON
-# ==============================
-
 def load_data():
-    """Đọc dữ liệu từ file JSON."""
     if os.path.exists(DATA_FILE):
-        with open(DATA_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
+        try:
+            with open(DATA_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            return {}
     return {}
 
 def save_data():
-    """Ghi dữ liệu vào file JSON."""
     with open(DATA_FILE, "w", encoding="utf-8") as f:
         json.dump(users_db, f, ensure_ascii=False, indent=4)
 
-# ==============================
-# KHỞI TẠO DỮ LIỆU
-# ==============================
-
-users_db = load_data()   # { "user_id": { "username": str, "balance": int } }
+users_db = load_data()
 pending_deposits = {}
 
 def get_user(user_id):
-    """Lấy hoặc tạo mới thông tin người dùng."""
     uid = str(user_id)
     if uid not in users_db:
-        users_db[uid] = {"username": "Thành viên", "balance": 0}
+        users_db[uid] = {
+            "username": "Thành viên",
+            "balance": 0,
+            "vip_expiry": 0,
+            "total_spent": 0,
+            "purchases": []
+        }
         save_data()
+    # Đảm bảo các key tồn tại (cho data cũ)
+    users_db[uid].setdefault("vip_expiry", 0)
+    users_db[uid].setdefault("total_spent", 0)
+    users_db[uid].setdefault("purchases", [])
     return users_db[uid]
 
 def update_balance(user_id, amount):
-    """Cập nhật số dư người dùng."""
     user = get_user(user_id)
     user["balance"] += amount
     save_data()
 
-# ==============================
-# HÀM LẤY THỜI GIAN VIỆT NAM
-# ==============================
-
 def get_vn_time():
     tz = pytz.timezone("Asia/Ho_Chi_Minh")
     return datetime.now(tz).strftime("%H:%M:%S - %d/%m/%Y")
+
+# ==============================
+# HÀM XỬ LÝ VIP
+# ==============================
+
+def is_vip_active(user_id):
+    user = get_user(user_id)
+    expiry = user.get("vip_expiry", 0)
+    if expiry == -1:
+        return True
+    return expiry > time.time()
+
+def get_vip_status_text(user_id):
+    user = get_user(user_id)
+    expiry = user.get("vip_expiry", 0)
+    if expiry == -1:
+        return "💎 VIP: Vĩnh viễn ♾️"
+    if expiry <= time.time():
+        return "❌ VIP: Chưa kích hoạt"
+    remaining = expiry - time.time()
+    days = int(remaining // 86400)
+    hours = int((remaining % 86400) // 3600)
+    minutes = int((remaining % 3600) // 60)
+    return f"✅ VIP: Còn {days} ngày {hours} giờ {minutes} phút"
+
+def add_vip(user_id, duration_days):
+    user = get_user(user_id)
+    now = time.time()
+    current = user.get("vip_expiry", 0)
+
+    if duration_days == -1:
+        user["vip_expiry"] = -1
+    elif current == -1:
+        pass  # Đã vĩnh viễn
+    elif current > now:
+        user["vip_expiry"] = current + duration_days * 86400
+    else:
+        user["vip_expiry"] = now + duration_days * 86400
+    save_data()
 
 # ==============================
 # FLASK WEB SERVER
@@ -92,20 +154,33 @@ def get_vn_time():
 
 app = Flask(__name__)
 
-@app.route("/")
+@app.route("/", methods=["GET", "HEAD"])
 def home():
-    """Trang chủ hiển thị số người dùng và nút tải JSON."""
-    total_users = len(users_db)
-    total_balance = sum(u["balance"] for u in users_db.values())
+    try:
+        total_users = len(users_db)
+        total_balance = sum(u.get("balance", 0) for u in users_db.values())
+        total_vip = sum(1 for u in users_db.values() if u.get("vip_expiry", 0) == -1 or u.get("vip_expiry", 0) > time.time())
+        total_revenue = sum(u.get("total_spent", 0) for u in users_db.values())
+    except Exception:
+        total_users = total_balance = total_vip = total_revenue = 0
     return render_template("index.html",
                            total_users=total_users,
-                           total_balance=total_balance)
+                           total_balance=total_balance,
+                           total_vip=total_vip,
+                           total_revenue=total_revenue)
 
-@app.route("/download-json")
+@app.route("/download-json", methods=["GET", "HEAD"])
 def download_json():
-    """Tải file JSON chứa toàn bộ dữ liệu người dùng."""
-    return send_file(DATA_FILE, mimetype="application/json",
-                     as_attachment=True, download_name="users.json")
+    if not os.path.exists(DATA_FILE):
+        save_data()
+    return send_file(DATA_FILE,
+                     mimetype="application/json",
+                     as_attachment=True,
+                     download_name="users.json")
+
+@app.route("/health", methods=["GET", "HEAD"])
+def health():
+    return "OK", 200
 
 # ==============================
 # LỆNH START
@@ -119,6 +194,8 @@ def start_command(message):
     user_data["username"] = f"@{user.username}" if user.username else user.first_name
     save_data()
 
+    vip_text = get_vip_status_text(user_id)
+
     text = (
         "🎰 <b>HỆ THỐNG DỰ ĐOÁN TÀI XỈU</b> 🎰\n"
         "🔥 <b>UY TÍN - CHÍNH XÁC - TỐC ĐỘ</b> 🔥\n\n"
@@ -129,6 +206,7 @@ def start_command(message):
         f"👤 <b>Tên:</b> {user_data['username']}\n"
         f"🆔 <b>User ID:</b> <code>{user_id}</code>\n"
         f"💎 <b>Số dư:</b> <b>{user_data['balance']:,} VND</b>\n"
+        f"🎖️ <b>Trạng thái:</b> {vip_text}\n"
         "</blockquote>\n"
         "💡 <i>Chọn chức năng bên dưới để bắt đầu 👇</i>"
     )
@@ -285,7 +363,7 @@ def confirm_deposit_callback(call):
                      reply_markup=admin_keyboard)
 
 # ==============================
-# ADMIN DUYỆT ĐƠN
+# ADMIN DUYỆT / TỪ CHỐI NẠP
 # ==============================
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith("approve_"))
@@ -340,10 +418,6 @@ def admin_approve_callback(call):
     except Exception as e:
         print(f"Không thể gửi tin nhắn lên group: {e}")
 
-# ==============================
-# ADMIN TỪ CHỐI ĐƠN
-# ==============================
-
 @bot.callback_query_handler(func=lambda call: call.data.startswith("reject_"))
 def admin_reject_callback(call):
     data = call.data.split("_")
@@ -372,7 +446,8 @@ def admin_reject_callback(call):
 def account_callback(call):
     user = call.from_user
     user_data = get_user(user.id)
-    username = (f"@{user.username}" if user.username else user.first_name)
+    username = f"@{user.username}" if user.username else user.first_name
+    vip_text = get_vip_status_text(user.id)
 
     text = (
         "👤 <b>THÔNG TIN TÀI KHOẢN</b> 👤\n\n"
@@ -380,6 +455,8 @@ def account_callback(call):
         f"👤 <b>Tên:</b> {username}\n"
         f"🆔 <b>User ID:</b> <code>{user.id}</code>\n"
         f"💎 <b>Số dư:</b> <b>{user_data['balance']:,} VND</b>\n"
+        f"🎖️ <b>Trạng thái:</b> {vip_text}\n"
+        f"💵 <b>Tổng chi tiêu:</b> <b>{user_data.get('total_spent', 0):,} VND</b>\n"
         "</blockquote>\n\n"
         "💡 <i>Nạp tiền để tham gia đặt cược ngay!</i>"
     )
@@ -387,29 +464,156 @@ def account_callback(call):
     bot.send_message(call.message.chat.id, text, parse_mode="HTML")
 
 # ==============================
-# NÚT MUA KEY
+# NÚT MUA KEY (MENU GÓI)
 # ==============================
 
 @bot.callback_query_handler(func=lambda call: call.data == "buy_key")
 def buy_key_callback(call):
     bot.answer_callback_query(call.id)
+
     text = (
-        "🔑 <b>MUA KEY</b>\n\n"
-        "🗝️ <b>Các loại Key hiện có:</b>\n"
+        "🔑 <b>MUA KEY VIP</b> 🔑\n\n"
+        "💎 <b>Chọn gói VIP phù hợp với bạn:</b>\n\n"
         "<blockquote>"
-        "🥉 Key Ngày — 50.000 VND\n"
-        "🥈 Key Tuần — 200.000 VND\n"
-        "🥇 Key Tháng — 500.000 VND\n"
-        "💎 Key Vĩnh Viễn — 1.500.000 VND\n"
-        "</blockquote>\n"
-        "📩 <i>Liên hệ ADMIN để mua Key và kích hoạt ngay!</i>"
+        "🥉 <b>Key 1 Ngày</b> — 25.000 VND\n"
+        "🥈 <b>Key 3 Ngày</b> — 50.000 VND\n"
+        "🥇 <b>Key 1 Tuần</b> — 70.000 VND\n"
+        "🏆 <b>Key 1 Tháng</b> — 150.000 VND\n"
+        "👑 <b>Key 1 Năm</b> — 200.000 VND\n"
+        "💎 <b>Key Vĩnh Viễn</b> — 350.000 VND\n"
+        "</blockquote>\n\n"
+        "⚠️ <i>Số tiền sẽ được trừ trực tiếp từ số dư của bạn.</i>\n"
+        "💡 <i>Nếu chưa đủ tiền, hãy nạp thêm trước khi mua!</i>"
     )
-    keyboard = types.InlineKeyboardMarkup()
+
+    keyboard = types.InlineKeyboardMarkup(row_width=2)
+    for pkg_key, pkg in VIP_PACKAGES.items():
+        keyboard.add(types.InlineKeyboardButton(
+            f"{pkg['emoji']} {pkg['name']} — {pkg['price']:,}đ",
+            callback_data=f"buy_package_{pkg_key}"
+        ))
     keyboard.add(types.InlineKeyboardButton(
-        f"📞 Liên Hệ ADMIN {ADMIN_USERNAME}",
+        "💳 Nạp Tiền Ngay", callback_data="deposit"))
+    keyboard.add(types.InlineKeyboardButton(
+        "📞 Liên Hệ ADMIN",
         url=f"https://t.me/{ADMIN_USERNAME.lstrip('@')}"))
+
     bot.send_message(call.message.chat.id, text, parse_mode="HTML",
                      reply_markup=keyboard)
+
+# ==============================
+# XỬ LÝ MUA GÓI VIP
+# ==============================
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("buy_package_"))
+def buy_package_callback(call):
+    pkg_key = call.data.replace("buy_package_", "")
+    if pkg_key not in VIP_PACKAGES:
+        bot.answer_callback_query(call.id, "❌ Gói không tồn tại!", show_alert=True)
+        return
+
+    pkg = VIP_PACKAGES[pkg_key]
+    user = call.from_user
+    user_data = get_user(user.id)
+
+    # Kiểm tra số dư
+    if user_data["balance"] < pkg["price"]:
+        missing = pkg["price"] - user_data["balance"]
+        bot.answer_callback_query(call.id, "❌ Số dư không đủ!", show_alert=True)
+
+        keyboard = types.InlineKeyboardMarkup(row_width=1)
+        keyboard.add(types.InlineKeyboardButton(
+            "💳 Nạp Tiền Ngay", callback_data="deposit"))
+        keyboard.add(types.InlineKeyboardButton(
+            "📞 Liên Hệ ADMIN",
+            url=f"https://t.me/{ADMIN_USERNAME.lstrip('@')}"))
+
+        bot.send_message(call.message.chat.id,
+            f"❌ <b>KHÔNG ĐỦ SỐ DƯ</b>\n\n"
+            "<blockquote>"
+            f"🎁 <b>Gói:</b> {pkg['emoji']} {pkg['name']}\n"
+            f"💰 <b>Giá:</b> <b>{pkg['price']:,} VND</b>\n"
+            f"💎 <b>Số dư hiện tại:</b> <b>{user_data['balance']:,} VND</b>\n"
+            f"⚠️ <b>Cần thêm:</b> <b>{missing:,} VND</b>\n"
+            "</blockquote>\n\n"
+            "👉 <i>Vui lòng nạp thêm tiền để tiếp tục mua gói này!</i>",
+            parse_mode="HTML", reply_markup=keyboard)
+        return
+
+    # Trừ tiền
+    user_data["balance"] -= pkg["price"]
+    user_data["total_spent"] = user_data.get("total_spent", 0) + pkg["price"]
+
+    # Thêm VIP
+    add_vip(user.id, pkg["days"])
+
+    # Lưu lịch sử
+    time_vn = get_vn_time()
+    user_data["purchases"].append({
+        "package": pkg_key,
+        "name": pkg["name"],
+        "price": pkg["price"],
+        "time": time_vn
+    })
+    save_data()
+
+    bot.answer_callback_query(call.id, f"✅ Mua thành công {pkg['name']}!")
+
+    vip_status = get_vip_status_text(user.id)
+
+    # Thông báo cho user
+    bot.send_message(call.message.chat.id,
+        "✅ <b>MUA GÓI VIP THÀNH CÔNG</b> ✅\n\n"
+        "<blockquote>"
+        f"🎁 <b>Gói đã mua:</b> {pkg['emoji']} {pkg['name']}\n"
+        f"💰 <b>Giá:</b> <b>{pkg['price']:,} VND</b>\n"
+        f"💎 <b>Số dư còn lại:</b> <b>{user_data['balance']:,} VND</b>\n"
+        f"🎖️ <b>Trạng thái:</b> {vip_status}\n"
+        f"⏰ <b>Thời gian:</b> {time_vn}\n"
+        "</blockquote>\n\n"
+        "🎉 <i>Cảm ơn bạn đã mua gói VIP! "
+        "Chúc bạn chơi game vui vẻ và thắng lớn!</i>",
+        parse_mode="HTML")
+
+    # Thông báo cho ADMIN
+    username = f"@{user.username}" if user.username else user.first_name
+    try:
+        bot.send_message(ADMIN_ID,
+            "🛒 <b>ĐƠN MUA VIP MỚI</b> 🛒\n\n"
+            "<blockquote>"
+            f"🆔 <b>User ID:</b> <code>{user.id}</code>\n"
+            f"👤 <b>Username:</b> {username}\n"
+            f"🎁 <b>Gói:</b> {pkg['emoji']} {pkg['name']}\n"
+            f"💰 <b>Giá:</b> <b>{pkg['price']:,} VND</b>\n"
+            f"⏰ <b>Thời gian:</b> {time_vn}\n"
+            "</blockquote>", parse_mode="HTML")
+    except Exception as e:
+        print(f"Không thể gửi thông báo cho admin: {e}")
+
+    # Thông báo lên GROUP
+    group_text = (
+        "🎉 <b>THÔNG BÁO MUA VIP THÀNH CÔNG</b> 🎉\n\n"
+
+        f"👤 <b>Username:</b> {username}\n"
+        f"🎁 <b>Gói VIP:</b> {pkg['emoji']} <b>{pkg['name']}</b>\n"
+        f"💰 <b>Giá trị:</b> <b>{pkg['price']:,} VND</b>\n"
+        f"⏰ <b>Thời gian:</b> {time_vn}\n\n"
+
+        "💎 <i>Chúc mừng thành viên đã nâng cấp VIP thành công!</i>\n"
+        "🔥 <i>Tham gia chơi ngay để nhận thưởng lớn!</i>"
+    )
+
+    group_keyboard = types.InlineKeyboardMarkup(row_width=2)
+    group_keyboard.add(
+        types.InlineKeyboardButton("🤖 Vào Bot", url=BOT_LINK),
+        types.InlineKeyboardButton("📢 Group Thông Báo", url=GROUP_LINK)
+    )
+
+    try:
+        bot.send_message(GROUP_CHAT_ID, group_text, parse_mode="HTML",
+                         reply_markup=group_keyboard)
+    except Exception as e:
+        print(f"Không thể gửi tin nhắn lên group: {e}")
 
 # ==============================
 # NÚT CHƠI GAME
@@ -417,22 +621,167 @@ def buy_key_callback(call):
 
 @bot.callback_query_handler(func=lambda call: call.data == "play_game")
 def play_game_callback(call):
-    bot.answer_callback_query(call.id,
-        "🎮 Hãy nhập Key để bắt đầu chơi!", show_alert=True)
+    user = call.from_user
+
+    # Kiểm tra VIP
+    if not is_vip_active(user.id):
+        bot.answer_callback_query(call.id, "❌ Bạn chưa có VIP!", show_alert=True)
+
+        keyboard = types.InlineKeyboardMarkup(row_width=1)
+        keyboard.add(types.InlineKeyboardButton(
+            "🔑 Mua Key VIP Ngay", callback_data="buy_key"))
+        keyboard.add(types.InlineKeyboardButton(
+            "📞 Liên Hệ ADMIN",
+            url=f"https://t.me/{ADMIN_USERNAME.lstrip('@')}"))
+
+        bot.send_message(call.message.chat.id,
+            "🔒 <b>YÊU CẦU VIP</b>\n\n"
+            "<blockquote>"
+            "❌ Bạn chưa có gói VIP để chơi game!\n"
+            "💎 Vui lòng mua VIP để truy cập vào hệ thống game.\n"
+            "</blockquote>\n\n"
+            "🎁 <b>Các gói VIP hiện có:</b>\n"
+            "<blockquote>"
+            "🥉 Key 1 Ngày — 25.000 VND\n"
+            "🥈 Key 3 Ngày — 50.000 VND\n"
+            "🥇 Key 1 Tuần — 70.000 VND\n"
+            "🏆 Key 1 Tháng — 150.000 VND\n"
+            "👑 Key 1 Năm — 200.000 VND\n"
+            "💎 Key Vĩnh Viễn — 350.000 VND\n"
+            "</blockquote>\n\n"
+            "👉 <i>Nhấn nút bên dưới để mua VIP ngay!</i>",
+            parse_mode="HTML", reply_markup=keyboard)
+        return
+
+    bot.answer_callback_query(call.id, "🎮 Đang mở danh sách game...")
+
+    vip_text = get_vip_status_text(user.id)
+
+    text = (
+        "🎮 <b>DANH SÁCH GAME</b> 🎮\n\n"
+        f"🎖️ <b>Trạng thái:</b> {vip_text}\n\n"
+        "🎯 <b>Chọn game bạn muốn chơi:</b>\n"
+        "<blockquote>"
+        "☀️ <b>Sunwin</b> — Game bài đổi thưởng\n"
+        "🎯 <b>B52 Club</b> — Sân chơi đỉnh cao\n"
+        "🎰 <b>Go88</b> — Cổng game quốc tế\n"
+        "🎲 <b>Rikvip</b> — Game bài uy tín\n"
+        "🃏 <b>Manclub</b> — Đẳng cấp số 1\n"
+        "🎴 <b>789 Club</b> — Kho game khổng lồ\n"
+        "</blockquote>\n\n"
+        "🔥 <i>Chọn game bên dưới để bắt đầu trải nghiệm!</i>"
+    )
+
+    keyboard = types.InlineKeyboardMarkup(row_width=2)
+    for game_key, game in GAMES.items():
+        keyboard.add(types.InlineKeyboardButton(
+            f"{game['emoji']} {game['name']}",
+            callback_data=f"game_{game_key}"
+        ))
+    keyboard.add(types.InlineKeyboardButton(
+        "🔙 Quay Lại", callback_data="back_to_menu"))
+
+    bot.send_message(call.message.chat.id, text, parse_mode="HTML",
+                     reply_markup=keyboard)
+
+# ==============================
+# XỬ LÝ CHỌN GAME
+# ==============================
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("game_"))
+def game_callback(call):
+    game_key = call.data.replace("game_", "")
+    if game_key not in GAMES:
+        bot.answer_callback_query(call.id, "❌ Game không tồn tại!", show_alert=True)
+        return
+
+    game = GAMES[game_key]
+    user = call.from_user
+
+    if not is_vip_active(user.id):
+        bot.answer_callback_query(call.id, "❌ VIP đã hết hạn!", show_alert=True)
+        return
+
+    bot.answer_callback_query(call.id, f"🎮 Đang mở {game['name']}...")
+
+    text = (
+        f"{game['emoji']} <b>{game['name'].upper()}</b> {game['emoji']}\n\n"
+        "<blockquote>"
+        f"🎮 <b>Game:</b> {game['name']}\n"
+        f"🔗 <b>Link:</b> <a href=\"{game['link']}\">Nhấn vào đây để chơi</a>\n"
+        "</blockquote>\n\n"
+        "⚠️ <i>Vui lòng đăng nhập và chơi có trách nhiệm!</i>\n"
+        "💎 <i>Chúc bạn may mắn và thắng lớn!</i>"
+    )
+
+    keyboard = types.InlineKeyboardMarkup(row_width=2)
+    keyboard.add(types.InlineKeyboardButton(
+        f"🎮 Chơi {game['name']}", url=game["link"]))
+    keyboard.add(types.InlineKeyboardButton(
+        "🔙 Danh Sách Game", callback_data="play_game"))
+
+    bot.send_message(call.message.chat.id, text, parse_mode="HTML",
+                     reply_markup=keyboard)
+
+# ==============================
+# NÚT QUAY LẠI MENU
+# ==============================
+
+@bot.callback_query_handler(func=lambda call: call.data == "back_to_menu")
+def back_to_menu_callback(call):
+    bot.answer_callback_query(call.id)
+
+    user = call.from_user
+    user_data = get_user(user.id)
+    username = f"@{user.username}" if user.username else user.first_name
+    vip_text = get_vip_status_text(user.id)
+
+    text = (
+        "🎰 <b>HỆ THỐNG DỰ ĐOÁN TÀI XỈU</b> 🎰\n"
+        "🔥 <b>UY TÍN - CHÍNH XÁC - TỐC ĐỘ</b> 🔥\n\n"
+        "👤 <b>THÔNG TIN TÀI KHOẢN</b>\n"
+        "<blockquote>"
+        f"👤 <b>Tên:</b> {username}\n"
+        f"🆔 <b>User ID:</b> <code>{user.id}</code>\n"
+        f"💎 <b>Số dư:</b> <b>{user_data['balance']:,} VND</b>\n"
+        f"🎖️ <b>Trạng thái:</b> {vip_text}\n"
+        "</blockquote>\n"
+        "💡 <i>Chọn chức năng bên dưới để bắt đầu 👇</i>"
+    )
+
+    keyboard = types.InlineKeyboardMarkup(row_width=2)
+    keyboard.add(
+        types.InlineKeyboardButton("💳 Nạp Tiền", callback_data="deposit"),
+        types.InlineKeyboardButton("🔑 Mua Key", callback_data="buy_key")
+    )
+    keyboard.add(
+        types.InlineKeyboardButton("🎮 Chơi Game", callback_data="play_game"),
+        types.InlineKeyboardButton("📞 Liên Hệ ADMIN",
+                                   url=f"https://t.me/{ADMIN_USERNAME.lstrip('@')}")
+    )
+    keyboard.add(types.InlineKeyboardButton("💬 Cộng Đồng", url=GROUP_LINK))
+
+    bot.send_message(call.message.chat.id, text, parse_mode="HTML",
+                     reply_markup=keyboard)
 
 # ==============================
 # CHẠY SONG SONG FLASK + BOT
 # ==============================
 
 def run_flask():
-    app.run(host="0.0.0.0", port=5000, debug=False, use_reloader=False)
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port, debug=False, use_reloader=False)
 
 if __name__ == "__main__":
-    # Chạy Flask server trên một luồng riêng
+    try:
+        bot.remove_webhook()
+        print("✅ Đã xóa webhook cũ")
+    except Exception as e:
+        print(f"⚠️ Không thể xóa webhook: {e}")
+
     flask_thread = threading.Thread(target=run_flask, daemon=True)
     flask_thread.start()
-    print("🌐 Flask server đang chạy tại http://localhost:5000")
+    print(f"🌐 Flask đang chạy tại http://0.0.0.0:{os.environ.get('PORT', 5000)}")
 
-    # Chạy bot Telegram
     print("🤖 Bot Telegram đang chạy...")
-    bot.infinity_polling(skip_pending=True)
+    bot.infinity_polling(skip_pending=True, timeout=30, long_polling_timeout=30)
